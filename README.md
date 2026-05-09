@@ -12,11 +12,17 @@
 
 ```bash
 npm install
-cp .env.local.example .env.local
+cp example.env .env.local
 npm run dev
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)。
+
+也可以使用：
+
+```bash
+cp .env.example .env.local
+```
 
 ## 推荐环境变量
 
@@ -40,3 +46,19 @@ CANDIDATE_LLM_MODEL=gpt-5.4-mini
 npm run build
 npm run start
 ```
+
+## 部署提示
+
+- 推荐 Node.js 20 或更高版本。
+- 首次部署时，先复制环境变量模板：
+
+```bash
+cp example.env .env.local
+```
+
+- 然后按需填写：
+  - `OPENALEX_MAILTO`
+  - `OPENAI_API_KEY`
+  - `TOPIC_LLM_MODEL`
+  - `CANDIDATE_LLM_MODEL`
+- 不填写 `OPENAI_API_KEY` 也可以运行，但会退回非 AI 生成链路。
