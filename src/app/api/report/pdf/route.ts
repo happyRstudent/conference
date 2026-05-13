@@ -37,6 +37,18 @@ const reportSchema = z.object({
         achievements: z.array(z.string()).optional(),
         isYoungScholar: z.boolean().optional(),
         matchedKeywords: z.array(z.string()).optional(),
+        scoreBreakdown: z
+          .object({
+            topicFit: z.number(),
+            recency: z.number(),
+            impact: z.number(),
+            dataConfidence: z.number(),
+            youngBonus: z.number(),
+            llmAdjustment: z.number(),
+          })
+          .optional(),
+        evidenceSummary: z.array(z.string()).optional(),
+        llmReviewNote: z.string().optional(),
         sourceTags: z.array(z.enum(["openalex", "semanticscholar", "orcid", "mock"])),
         dataCompleteness: z.enum(["high", "medium", "low"]),
         missingFields: z.array(z.string()),
@@ -68,7 +80,8 @@ export async function POST(request: Request) {
         "Content-Disposition": "attachment; filename*=UTF-8''conference-report.pdf",
       },
     });
-  } catch {
+  } catch (error) {
+    console.error("PDF report generation failed:", error);
     return NextResponse.json(
       { error: "PDF 生成失败，请稍后重试。" },
       { status: 500 },

@@ -30,6 +30,7 @@ cp .env.example .env.local
 
 ```env
 OPENALEX_MAILTO=your-email@example.com
+OPENALEX_API_KEY=
 OPENAI_API_KEY=
 TOPIC_LLM_MODEL=gpt-5.4-mini
 CANDIDATE_LLM_MODEL=gpt-5.4-mini
@@ -39,6 +40,7 @@ CANDIDATE_LLM_MODEL=gpt-5.4-mini
 
 - 不填写 `OPENAI_API_KEY` 也能运行，但会退回非 AI 生成链路。
 - `OPENALEX_MAILTO` 建议填写，以提升学术检索稳定性。
+- `OPENALEX_API_KEY` 可选；如果需要更稳定的高频 OpenAlex 请求，可以申请免费 key 后填写。
 
 ## 生产构建
 

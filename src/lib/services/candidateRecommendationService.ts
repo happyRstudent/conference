@@ -12,6 +12,13 @@ import {
   hasOpenAiApiKey,
   requestOpenAiStructuredOutput,
 } from "@/lib/services/openaiService";
+import {
+  applyLlmReviewToCandidate,
+  buildTopicKeywords,
+  computeCandidateScore,
+  isYoungScholar,
+  type LlmCandidateReview,
+} from "@/lib/services/candidateScoringService";
 import { enrichScholarProfile } from "@/lib/services/scholarProfileService";
 import { searchScholarsByTopic } from "@/lib/services/scholarSearchService";
 import { buildId } from "@/lib/utils/common";
@@ -24,85 +31,16 @@ interface RecommendOptions {
   preferYoungScholar: boolean;
 }
 
-interface CandidateReview {
-  externalId: string;
-  reason: string;
-  detailSummary: string;
-  matchedKeywords: string[];
-}
+type CandidateReview = LlmCandidateReview;
 
 interface CandidateReviewsPayload {
   candidates: CandidateReview[];
 }
 
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .filter((token) => token.length > 1);
-}
-
-const keywordExpansionMap: Array<{ pattern: RegExp; expansion: string[] }> = [
-  {
-    pattern: /人工智能|AI|机器学习|深度学习/gi,
-    expansion: ["artificial intelligence", "machine learning", "deep learning"],
-  },
-  { pattern: /自然语言处理/gi, expansion: ["natural language processing"] },
-  { pattern: /医学|医疗|临床|健康/gi, expansion: ["medical", "clinical", "healthcare"] },
-  { pattern: /主题建模/gi, expansion: ["topic modeling"] },
-  { pattern: /影像|医学影像/gi, expansion: ["medical imaging", "computer vision"] },
-];
-
 function normalizeRegion(countryCode?: string): string | undefined {
   if (!countryCode) return undefined;
   if (countryCode === "CN") return "中国";
   return countryCode;
-}
-
-function isYoungScholarCandidate(scholar: ScholarRawData): boolean {
-  const hIndex = scholar.hIndex ?? 999;
-  const works = scholar.worksCount ?? 999;
-  return hIndex <= 25 || works <= 100;
-}
-
-function buildTopicKeywords(topic: Topic, theme: string): string[] {
-  const baseKeywords = topic.keywords || [];
-  const expanded: string[] = [];
-  [...baseKeywords, topic.title, theme].forEach((item) => {
-    keywordExpansionMap.forEach(({ pattern, expansion }) => {
-      if (pattern.test(item)) {
-        expanded.push(...expansion);
-      }
-    });
-  });
-  return Array.from(
-    new Set([...baseKeywords, ...expanded, ...tokenize(topic.title), ...tokenize(theme)]),
-  );
-}
-
-function getMatchedKeywords(topicKeywords: string[], scholar: ScholarRawData): string[] {
-  const scholarKeywords = [
-    ...(scholar.concepts || []),
-    ...tokenize((scholar.recentWorkTitles || []).join(" ")),
-  ];
-  const topicSet = new Set(topicKeywords.map((item) => item.toLowerCase()));
-  return Array.from(
-    new Set(scholarKeywords.filter((keyword) => topicSet.has(keyword.toLowerCase()))),
-  ).slice(0, 5);
-}
-
-function computeScore(
-  scholar: ScholarRawData,
-  matchedKeywords: string[],
-  preferYoungScholar: boolean,
-): number {
-  const matchScore = Math.min(55, matchedKeywords.length * 10);
-  const citationScore = Math.min(20, Math.log10((scholar.citedByCount || 0) + 1) * 8);
-  const hIndexScore = Math.min(15, (scholar.hIndex || 0) * 0.45);
-  const activityScore = Math.min(10, (scholar.worksCount || 0) * 0.08);
-  const youngBonus = preferYoungScholar && isYoungScholarCandidate(scholar) ? 3 : 0;
-  return Math.round(matchScore + citationScore + hIndexScore + activityScore + youngBonus);
 }
 
 function collectMissingFields(candidate: Candidate): string[] {
@@ -137,7 +75,7 @@ function buildReason(
   if (typeof scholar.hIndex === "number" && typeof scholar.citedByCount === "number") {
     parts.push(`公开数据中 H-index ${scholar.hIndex}、被引 ${scholar.citedByCount} 次`);
   }
-  if (preferYoungScholar && isYoungScholarCandidate(scholar)) {
+  if (preferYoungScholar && isYoungScholar(scholar)) {
     parts.push("符合青年教师优先条件");
   }
   if (parts.length === 0) {
@@ -147,6 +85,9 @@ function buildReason(
 }
 
 function buildResearchAreaText(scholar: ScholarRawData): string | undefined {
+  if (scholar.topicNames && scholar.topicNames.length > 0) {
+    return scholar.topicNames.slice(0, 5).join("、");
+  }
   if (scholar.concepts && scholar.concepts.length > 0) {
     return scholar.concepts.slice(0, 5).join("、");
   }
@@ -172,7 +113,7 @@ function buildAchievements(scholar: ScholarRawData): string[] {
 
 function toCandidate(
   scholar: ScholarRawData,
-  score: number,
+  scoreResult: ReturnType<typeof computeCandidateScore>,
   matchedKeywords: string[],
   reason: string,
 ): Candidate {
@@ -183,7 +124,7 @@ function toCandidate(
     institution: scholar.institution,
     region: normalizeRegion(scholar.countryCode),
     researchAreas: buildResearchAreaText(scholar),
-    score,
+    score: scoreResult.score,
     reason,
     homepageUrl: scholar.homepageUrl,
     databaseUrl: scholar.databaseUrl,
@@ -191,8 +132,10 @@ function toCandidate(
       ? `近五年代表论文主题：${scholar.recentWorkTitles.slice(0, 3).join("；")}`
       : "暂未检索到足够的近期论文摘要信息。",
     achievements: buildAchievements(scholar),
-    isYoungScholar: isYoungScholarCandidate(scholar),
+    isYoungScholar: isYoungScholar(scholar),
     matchedKeywords,
+    scoreBreakdown: scoreResult.scoreBreakdown,
+    evidenceSummary: scoreResult.evidenceSummary,
     sourceTags: [scholar.source],
     dataCompleteness: "low",
     missingFields: [],
@@ -251,10 +194,12 @@ async function rerankCandidatesWithLlm(
 1) 必须只从提供的候选人中选择，禁止编造新人物；
 2) 优先判断“研究主题是否直接贴合议题”，其次再看学术影响力；
 3) 如果候选人与议题只是泛相关，不要优先入选；
-4) reason 需要说明其与议题的具体贴合点、持续研究证据和学术影响，35-90字；
-5) detailSummary 需要概括其与议题最相关的研究方向或近期工作，25-70字；
-6) matchedKeywords 只保留与议题最直接相关的1-4个关键词；
-7) 若 preferYoungScholar 为 true，可在同等相关性下适度优先青年学者，但不能牺牲主题匹配度。
+4) fitVerdict 只能是 strong、medium 或 weak，用于表达你对议题贴合度的主观判断；
+5) adjustment 是 -5 到 5 的整数。直接贴合且证据强可加分，泛相关或证据弱应扣分；
+6) reason 需要说明其与议题的具体贴合点、持续研究证据和邀请价值，35-90字；
+7) detailSummary 需要概括其与议题最相关的研究方向或近期工作，25-70字；
+8) matchedKeywords 只保留与议题最直接相关的1-4个关键词；
+9) 若 preferYoungScholar 为 true，可在同等相关性下适度优先青年学者，但不能牺牲主题匹配度。
 
 会议总主题：${conferenceTheme}
 当前议题标题：${topic.title}
@@ -275,6 +220,8 @@ preferYoungScholar：${preferYoungScholar ? "true" : "false"}
             type: "object",
             properties: {
               externalId: { type: "string" },
+              fitVerdict: { type: "string", enum: ["strong", "medium", "weak"] },
+              adjustment: { type: "number" },
               reason: { type: "string" },
               detailSummary: { type: "string" },
               matchedKeywords: {
@@ -282,7 +229,14 @@ preferYoungScholar：${preferYoungScholar ? "true" : "false"}
                 items: { type: "string" },
               },
             },
-            required: ["externalId", "reason", "detailSummary", "matchedKeywords"],
+            required: [
+              "externalId",
+              "fitVerdict",
+              "adjustment",
+              "reason",
+              "detailSummary",
+              "matchedKeywords",
+            ],
             additionalProperties: false,
           },
         },
@@ -302,23 +256,14 @@ preferYoungScholar：${preferYoungScholar ? "true" : "false"}
   );
 
   const selected: Candidate[] = [];
-  reviewed.candidates.forEach((item, index) => {
+  reviewed.candidates.forEach((item) => {
     const existing = candidateMap.get(item.externalId);
     if (!existing || selected.some((candidate) => candidate.externalId === item.externalId)) return;
 
-    selected.push({
-      ...existing,
-      score: Math.max(existing.score, 88 - index * 4),
-      reason: item.reason.trim() || existing.reason,
-      detailSummary: item.detailSummary.trim() || existing.detailSummary,
-      matchedKeywords: item.matchedKeywords
-        .map((keyword) => keyword.trim())
-        .filter(Boolean)
-        .slice(0, 4),
-    });
+    selected.push(applyLlmReviewToCandidate(existing, item));
   });
 
-  return selected.slice(0, candidateCount);
+  return selected.sort((a, b) => b.score - a.score).slice(0, candidateCount);
 }
 
 function finalizeCandidate(candidate: Candidate): Candidate {
@@ -358,15 +303,23 @@ export async function recommendCandidatesByTopics(
 
     const scoredCandidates = await Promise.all(
       enriched.map(async (scholar) => {
-        const matchedKeywords = getMatchedKeywords(topicKeywords, scholar);
-        const score = computeScore(scholar, matchedKeywords, options.preferYoungScholar);
+        const scoreResult = computeCandidateScore(
+          scholar,
+          topicKeywords,
+          options.preferYoungScholar,
+        );
         const reason = buildReason(
           scholar,
-          matchedKeywords,
+          scoreResult.matchedKeywords,
           topic.title,
           options.preferYoungScholar,
         );
-        const candidate = toCandidate(scholar, score, matchedKeywords, reason);
+        const candidate = toCandidate(
+          scholar,
+          scoreResult,
+          scoreResult.matchedKeywords,
+          reason,
+        );
         return validateCandidateLinks(candidate);
       }),
     );

@@ -2,6 +2,15 @@ export type Scope = "domestic" | "international";
 export type DataCompleteness = "high" | "medium" | "low";
 export type CandidateSource = "openalex" | "semanticscholar" | "orcid" | "mock";
 
+export interface CandidateScoreBreakdown {
+  topicFit: number;
+  recency: number;
+  impact: number;
+  dataConfidence: number;
+  youngBonus: number;
+  llmAdjustment: number;
+}
+
 export interface Topic {
   id: string;
   title: string;
@@ -25,6 +34,9 @@ export interface Candidate {
   achievements?: string[];
   isYoungScholar?: boolean;
   matchedKeywords?: string[];
+  scoreBreakdown?: CandidateScoreBreakdown;
+  evidenceSummary?: string[];
+  llmReviewNote?: string;
   sourceTags: CandidateSource[];
   dataCompleteness: DataCompleteness;
   missingFields: string[];
@@ -63,7 +75,16 @@ export interface ScholarRawData {
   homepageUrl?: string;
   databaseUrl?: string;
   concepts?: string[];
+  topicNames?: string[];
+  topicIds?: string[];
   recentWorkTitles?: string[];
+  recentRelevantWorks?: Array<{
+    title: string;
+    publicationYear?: number;
+    citedByCount?: number;
+    topicNames?: string[];
+    topicIds?: string[];
+  }>;
   source: CandidateSource;
   orcid?: string;
 }

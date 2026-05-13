@@ -7,6 +7,7 @@ interface Props {
 
 export function CandidateDetailModal({ candidate, onClose }: Props) {
   if (!candidate) return null;
+  const breakdown = candidate.scoreBreakdown;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
@@ -22,7 +23,23 @@ export function CandidateDetailModal({ candidate, onClose }: Props) {
           <p>国籍/地区：{candidate.region || "暂未获取"}</p>
           <p>研究方向：{candidate.researchAreas || "暂未获取"}</p>
           <p>综合评分：{candidate.score}</p>
+          {breakdown ? (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <p className="mb-2 font-medium text-slate-900">评分拆解</p>
+              <div className="grid gap-1 sm:grid-cols-2">
+                <p>主题贴合度：{breakdown.topicFit}/40</p>
+                <p>近期活跃度：{breakdown.recency}/20</p>
+                <p>学术影响力：{breakdown.impact}/20</p>
+                <p>数据可信度：{breakdown.dataConfidence}/10</p>
+                <p>青年优先：{breakdown.youngBonus}/5</p>
+                <p>LLM 复核：{breakdown.llmAdjustment > 0 ? "+" : ""}{breakdown.llmAdjustment}</p>
+              </div>
+            </div>
+          ) : null}
           <p>推荐理由：{candidate.reason}</p>
+          {candidate.llmReviewNote ? (
+            <p>LLM 复核说明：{candidate.llmReviewNote}</p>
+          ) : null}
           <p>
             数据完整度：
             {candidate.dataCompleteness === "high"
@@ -41,6 +58,16 @@ export function CandidateDetailModal({ candidate, onClose }: Props) {
               ))}
             </ul>
           </div>
+          {candidate.evidenceSummary?.length ? (
+            <div>
+              <p className="mb-1">评分证据：</p>
+              <ul className="list-disc space-y-1 pl-5">
+                {candidate.evidenceSummary.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           {candidate.homepageUrl ? (
             <a
               className="block text-blue-700 hover:underline"

@@ -1,6 +1,5 @@
 import {
   Document,
-  Font,
   Link,
   Page,
   StyleSheet,
@@ -12,15 +11,9 @@ import type { ReactElement } from "react";
 import type { RecommendationResult } from "@/lib/models/types";
 import { scopeLabelMap, toReadableDate } from "@/lib/utils/common";
 
-Font.register({
-  family: "NotoSansSC",
-  src: "https://fonts.gstatic.com/ea/notosanssc/v5/NotoSansSC-Regular.otf",
-});
-
 const styles = StyleSheet.create({
   page: {
     padding: 32,
-    fontFamily: "NotoSansSC",
     fontSize: 11,
     color: "#0f172a",
     lineHeight: 1.55,
@@ -106,7 +99,26 @@ export function buildRecommendationReportDocument(
                   </Text>
                   <Text style={styles.text}>研究方向：{candidate.researchAreas || "暂未获取"}</Text>
                   <Text style={styles.text}>综合评分：{candidate.score}</Text>
+                  {candidate.scoreBreakdown ? (
+                    <Text style={styles.text}>
+                      评分拆解：主题贴合 {candidate.scoreBreakdown.topicFit}/40；近期活跃{" "}
+                      {candidate.scoreBreakdown.recency}/20；学术影响{" "}
+                      {candidate.scoreBreakdown.impact}/20；数据可信{" "}
+                      {candidate.scoreBreakdown.dataConfidence}/10；青年优先{" "}
+                      {candidate.scoreBreakdown.youngBonus}/5；LLM 复核{" "}
+                      {candidate.scoreBreakdown.llmAdjustment > 0 ? "+" : ""}
+                      {candidate.scoreBreakdown.llmAdjustment}
+                    </Text>
+                  ) : null}
                   <Text style={styles.text}>推荐理由：{candidate.reason}</Text>
+                  {candidate.llmReviewNote ? (
+                    <Text style={styles.text}>LLM 复核说明：{candidate.llmReviewNote}</Text>
+                  ) : null}
+                  {candidate.evidenceSummary?.length ? (
+                    <Text style={styles.text}>
+                      评分证据：{candidate.evidenceSummary.join("；")}
+                    </Text>
+                  ) : null}
                   <Text style={styles.text}>
                     数据完整度：
                     {candidate.dataCompleteness === "high"

@@ -25,6 +25,7 @@ interface OpenAlexAuthor {
   }>;
   x_concepts?: Array<{ display_name?: string }>;
   concepts?: Array<{ display_name?: string }>;
+  topics?: Array<{ id?: string; display_name?: string }>;
 }
 
 interface OpenAlexAuthorResponse {
@@ -48,7 +49,12 @@ interface OpenAlexWorkAuthorship {
 }
 
 interface OpenAlexWorkResult {
+  display_name?: string;
+  publication_year?: number;
+  cited_by_count?: number;
   authorships?: OpenAlexWorkAuthorship[];
+  primary_topic?: { id?: string; display_name?: string };
+  topics?: Array<{ id?: string; display_name?: string }>;
   concepts?: Array<{ display_name?: string }>;
 }
 
@@ -163,6 +169,14 @@ function normalizeOpenAlexAuthor(item: OpenAlexAuthor): ScholarRawData | null {
     .map((concept) => concept.display_name?.trim())
     .filter((value): value is string => Boolean(value))
     .slice(0, 8);
+  const topicNames = (item.topics || [])
+    .map((topic) => topic.display_name?.trim())
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 8);
+  const topicIds = (item.topics || [])
+    .map((topic) => topic.id?.trim())
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 8);
   const orcidId = item.orcid?.trim();
   const normalizedOrcid = orcidId
     ? `https://orcid.org/${orcidId.split("/").pop()}`
@@ -179,9 +193,41 @@ function normalizeOpenAlexAuthor(item: OpenAlexAuthor): ScholarRawData | null {
     homepageUrl: normalizedOrcid,
     databaseUrl: id,
     concepts,
+    topicNames,
+    topicIds,
     source: "openalex",
     orcid: normalizedOrcid,
   };
+}
+
+function mergeUnique<T>(first?: T[], second?: T[]): T[] | undefined {
+  const merged = Array.from(new Set([...(first || []), ...(second || [])]));
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeScholarData(existing: ScholarRawData, incoming: ScholarRawData): ScholarRawData {
+  return {
+    ...existing,
+    institution: existing.institution || incoming.institution,
+    countryCode: existing.countryCode || incoming.countryCode,
+    homepageUrl: existing.homepageUrl || incoming.homepageUrl,
+    databaseUrl: existing.databaseUrl || incoming.databaseUrl,
+    concepts: mergeUnique(existing.concepts, incoming.concepts),
+    topicNames: mergeUnique(existing.topicNames, incoming.topicNames),
+    topicIds: mergeUnique(existing.topicIds, incoming.topicIds),
+    recentWorkTitles: mergeUnique(existing.recentWorkTitles, incoming.recentWorkTitles),
+    recentRelevantWorks: mergeUnique(existing.recentRelevantWorks, incoming.recentRelevantWorks),
+    worksCount: existing.worksCount ?? incoming.worksCount,
+    citedByCount: existing.citedByCount ?? incoming.citedByCount,
+    hIndex: existing.hIndex ?? incoming.hIndex,
+    orcid: existing.orcid || incoming.orcid,
+    source: existing.source === "openalex" ? "openalex" : incoming.source,
+  };
+}
+
+function addOrMergeScholar(target: Map<string, ScholarRawData>, scholar: ScholarRawData): void {
+  const existing = target.get(scholar.id);
+  target.set(scholar.id, existing ? mergeScholarData(existing, scholar) : scholar);
 }
 
 async function searchOpenAlex(
@@ -190,7 +236,10 @@ async function searchOpenAlex(
   limit: number,
 ): Promise<ScholarRawData[]> {
   const mailto = process.env.OPENALEX_MAILTO;
+  const apiKey = process.env.OPENALEX_API_KEY;
   const mailtoQuery = mailto ? `&mailto=${encodeURIComponent(mailto)}` : "";
+  const apiKeyQuery = apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : "";
+  const openAlexQuerySuffix = `${mailtoQuery}${apiKeyQuery}`;
   const merged = new Map<string, ScholarRawData>();
   const scopeFilter =
     scope === "domestic"
@@ -199,10 +248,77 @@ async function searchOpenAlex(
 
   for (const variant of buildQueryVariants(topicQuery)) {
     const encoded = encodeURIComponent(variant);
+    const workUrl = `${OPENALEX_BASE_URL}/works?search=${encoded}&filter=from_publication_date:${new Date().getFullYear() - 5}-01-01&per-page=${Math.min(
+      50,
+      Math.max(25, limit * 4),
+    )}${openAlexQuerySuffix}`;
+    const workResponse = await fetchWithTimeout(workUrl, {
+      headers: { Accept: "application/json" },
+    });
+    if (workResponse.ok) {
+      const worksPayload = (await workResponse.json()) as OpenAlexWorkSearchResponse;
+      (worksPayload.results || []).forEach((work) => {
+        const topicNames = [
+          work.primary_topic?.display_name,
+          ...(work.topics || []).map((topic) => topic.display_name),
+        ]
+          .map((value) => value?.trim())
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 6);
+        const topicIds = [
+          work.primary_topic?.id,
+          ...(work.topics || []).map((topic) => topic.id),
+        ]
+          .map((value) => value?.trim())
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 6);
+        const concepts = (work.concepts || [])
+          .map((item) => item.display_name)
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 6);
+        (work.authorships || []).forEach((authorship) => {
+          const authorId = authorship.author?.id;
+          const authorName = authorship.author?.display_name;
+          if (!authorId || !authorName) return;
+          const institution = authorship.institutions?.[0];
+          const countryCode = institution?.country_code;
+          if (!matchesScope(countryCode, scope)) return;
+          const orcid = authorship.author?.orcid
+            ? `https://orcid.org/${authorship.author.orcid.split("/").pop()}`
+            : undefined;
+          addOrMergeScholar(merged, {
+            id: authorId,
+            displayName: authorName,
+            institution: institution?.display_name,
+            countryCode,
+            homepageUrl: orcid,
+            databaseUrl: authorId,
+            concepts,
+            topicNames,
+            topicIds,
+            recentWorkTitles: work.display_name ? [work.display_name] : undefined,
+            recentRelevantWorks: work.display_name
+              ? [
+                  {
+                    title: work.display_name,
+                    publicationYear: work.publication_year,
+                    citedByCount: work.cited_by_count,
+                    topicNames,
+                    topicIds,
+                  },
+                ]
+              : undefined,
+            source: "openalex",
+            orcid,
+          });
+        });
+      });
+    }
+
     const authorUrl = `${OPENALEX_BASE_URL}/authors?search=${encoded}&filter=${scopeFilter}&sort=works_count:desc&per-page=${Math.min(
       50,
       Math.max(20, limit * 4),
-    )}${mailtoQuery}`;
+    )}${openAlexQuerySuffix}`;
     const response = await fetchWithTimeout(authorUrl, {
       headers: { Accept: "application/json" },
     });
@@ -214,10 +330,10 @@ async function searchOpenAlex(
       .map(normalizeOpenAlexAuthor)
       .filter((item): item is ScholarRawData => Boolean(item))
       .filter((item) => matchesScope(item.countryCode, scope))
-      .forEach((item) => merged.set(item.id, item));
+      .forEach((item) => addOrMergeScholar(merged, item));
 
     if (merged.size < limit * 2) {
-      const workUrl = `${OPENALEX_BASE_URL}/works?search=${encoded}&filter=from_publication_date:${new Date().getFullYear() - 5}-01-01&sort=cited_by_count:desc&per-page=25${mailtoQuery}`;
+      const workUrl = `${OPENALEX_BASE_URL}/works?search=${encoded}&filter=from_publication_date:${new Date().getFullYear() - 5}-01-01&sort=cited_by_count:desc&per-page=25${openAlexQuerySuffix}`;
       const workResponse = await fetchWithTimeout(workUrl, {
         headers: { Accept: "application/json" },
       });
@@ -239,7 +355,7 @@ async function searchOpenAlex(
             const orcid = authorship.author?.orcid
               ? `https://orcid.org/${authorship.author.orcid.split("/").pop()}`
               : undefined;
-            merged.set(authorId, {
+            addOrMergeScholar(merged, {
               id: authorId,
               displayName: authorName,
               institution: institution?.display_name,
@@ -314,31 +430,29 @@ async function searchSemanticScholar(
   return Array.from(output.values());
 }
 
-function mergeScholarsByIdentity(
+export function mergeScholarsByIdentity(
   openAlexScholars: ScholarRawData[],
   semanticScholars: ScholarRawData[],
 ): ScholarRawData[] {
   const byName = new Map<string, ScholarRawData>();
   [...openAlexScholars, ...semanticScholars].forEach((scholar) => {
-    const key = scholar.displayName.trim().toLowerCase();
+    const key = scholar.id.startsWith("https://openalex.org/")
+      ? scholar.id
+      : `${scholar.displayName.trim().toLowerCase()}::${scholar.institution || ""}`;
     const existing = byName.get(key);
     if (!existing) {
       byName.set(key, scholar);
       return;
     }
-    byName.set(key, {
-      ...existing,
-      institution: existing.institution || scholar.institution,
-      homepageUrl: existing.homepageUrl || scholar.homepageUrl,
-      databaseUrl: existing.databaseUrl || scholar.databaseUrl,
-      concepts: existing.concepts?.length ? existing.concepts : scholar.concepts,
-      worksCount: existing.worksCount ?? scholar.worksCount,
-      citedByCount: existing.citedByCount ?? scholar.citedByCount,
-      hIndex: existing.hIndex ?? scholar.hIndex,
-      source: existing.source === "openalex" ? "openalex" : scholar.source,
-    });
+    byName.set(key, mergeScholarData(existing, scholar));
   });
-  return Array.from(byName.values());
+  const output = new Map<string, ScholarRawData>();
+  byName.forEach((scholar) => {
+    const key = `${scholar.displayName.trim().toLowerCase()}::${scholar.institution || ""}`;
+    const existing = output.get(key);
+    output.set(key, existing ? mergeScholarData(existing, scholar) : scholar);
+  });
+  return Array.from(output.values());
 }
 
 function shouldEnableMockFallback(): boolean {
